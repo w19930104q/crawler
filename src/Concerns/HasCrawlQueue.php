@@ -23,32 +23,39 @@ trait HasCrawlQueue
 
     public function addToCrawlQueue(CrawlUrl $crawlUrl): self
     {
+        $this->addCrawlUrlToQueue($crawlUrl);
+
+        return $this;
+    }
+
+    protected function addCrawlUrlToQueue(CrawlUrl $crawlUrl): bool
+    {
         if ($this->getCrawlQueue()->has($crawlUrl->url)) {
-            return $this;
+            return false;
         }
 
         if ($this->matchesAlwaysCrawl($crawlUrl->url)) {
             $this->crawlQueue->add($crawlUrl);
 
-            return $this;
+            return true;
         }
 
         if ($this->matchesNeverCrawl($crawlUrl->url)) {
-            return $this;
+            return false;
         }
 
         if ($this->respectRobots && $this->robotsTxt !== null) {
             if (! $this->robotsTxt->allows($crawlUrl->url, $this->getUserAgent())) {
-                return $this;
+                return false;
             }
         }
 
         if (! $this->getCrawlProfile()->shouldCrawl($crawlUrl->url)) {
-            return $this;
+            return false;
         }
 
         $this->crawlQueue->add($crawlUrl);
 
-        return $this;
+        return true;
     }
 }

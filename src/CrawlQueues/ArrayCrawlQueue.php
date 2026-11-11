@@ -73,6 +73,16 @@ class ArrayCrawlQueue implements CrawlQueue
         return isset($this->urls[$this->normalizeUrl($url)]);
     }
 
+    public function getUrl(string $url): ?CrawlUrl
+    {
+        return $this->urls[$this->normalizeUrl($url)] ?? null;
+    }
+
+    public function getNormalizedUrl(string $url): string
+    {
+        return $this->normalizeUrl($url);
+    }
+
     public function getPendingUrl(): ?CrawlUrl
     {
         foreach ($this->pendingUrls as $pendingUrl) {

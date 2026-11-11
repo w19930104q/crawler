@@ -21,6 +21,7 @@ use Spatie\Crawler\Enums\FinishReason;
 use Spatie\Crawler\Enums\ResourceType;
 use Spatie\Crawler\Exceptions\InvalidCrawlRequestHandler;
 use Spatie\Crawler\Exceptions\MissingJavaScriptRenderer;
+use Spatie\Crawler\Exceptions\UnsupportedShortestDiscoveryDepthMode;
 use Spatie\Crawler\Handlers\CrawlRequestFailed;
 use Spatie\Crawler\Handlers\CrawlRequestFulfilled;
 use Spatie\Crawler\JavaScriptRenderers\BrowsershotRenderer;
@@ -46,6 +47,14 @@ class Crawler
     protected int $maximumResponseSize = 1024 * 1024 * 2;
 
     protected ?int $maximumDepth = null;
+
+    protected bool $useShortestDiscoveryDepth = false;
+
+    /** @var array<string, ShortestDepthNode> */
+    protected array $shortestDepthNodes = [];
+
+    /** @var array<string, int> */
+    protected array $shortestKnownDepths = [];
 
     protected bool $respectRobots = true;
 
@@ -116,6 +125,29 @@ class Crawler
         $this->maximumDepth = $maximumDepth;
 
         return $this;
+    }
+
+    /**
+     * Use the shortest discovered path to a URL when enforcing the crawl depth.
+     *
+     * Requires the built-in queue and does not support JavaScript rendering.
+     * Enable this before the first call to start().
+     */
+    public function shortestDiscoveryDepth(bool $enabled = true): self
+    {
+        $this->useShortestDiscoveryDepth = $enabled;
+
+        return $this;
+    }
+
+    public function withoutShortestDiscoveryDepth(): self
+    {
+        return $this->shortestDiscoveryDepth(false);
+    }
+
+    public function usesShortestDiscoveryDepth(): bool
+    {
+        return $this->useShortestDiscoveryDepth;
     }
 
     public function concurrency(int $concurrency): self
@@ -276,6 +308,8 @@ class Crawler
 
         $baseUrl = $this->normalizeBaseUrl($this->baseUrl);
         $this->baseUrl = $baseUrl;
+
+        $this->assertShortestDiscoveryDepthIsSupported();
 
         $this->totalUrlCount = $this->crawlQueue->getProcessedUrlCount();
 
@@ -467,6 +501,202 @@ class Crawler
         }
 
         usleep($this->delayBetweenRequests);
+    }
+
+    public function addToCrawlQueue(CrawlUrl $crawlUrl): self
+    {
+        if (! $this->useShortestDiscoveryDepth) {
+            $this->addCrawlUrlToQueue($crawlUrl);
+
+            return $this;
+        }
+
+        $queue = $this->shortestDiscoveryQueue();
+        $key = $queue->getNormalizedUrl($crawlUrl->url);
+
+        $bestDepth = min($crawlUrl->depth, $this->shortestKnownDepths[$key] ?? $crawlUrl->depth);
+        $crawlUrl->depth = $bestDepth;
+        $this->shortestKnownDepths[$key] = $bestDepth;
+
+        $existingCrawlUrl = $queue->getUrl($crawlUrl->url);
+
+        if ($existingCrawlUrl !== null) {
+            if ($bestDepth < $existingCrawlUrl->depth) {
+                $this->relaxCrawlUrlDepth($existingCrawlUrl, $bestDepth);
+            }
+
+            return $this;
+        }
+
+        $maximumDepth = $this->getMaximumDepth();
+
+        if ($maximumDepth !== null && $bestDepth > $maximumDepth) {
+            return $this;
+        }
+
+        if (! $this->addCrawlUrlToQueue($crawlUrl)) {
+            return $this;
+        }
+
+        $this->shortestDepthNodes[$key] = new ShortestDepthNode;
+
+        return $this;
+    }
+
+    /**
+     * Record the links that were extracted from a handled response. Recording
+     * them allows a later, shorter path to re-evaluate links that were
+     * previously outside the depth budget.
+     *
+     * @internal
+     *
+     * @param  array<int, ExtractedUrl>  $extractedUrls
+     * @param  array<int, string>  $redirectTargets
+     */
+    public function registerCrawlResult(
+        CrawlUrl $crawlUrl,
+        string $foundOnUrl,
+        array $extractedUrls,
+        array $redirectTargets,
+    ): void {
+        if (! $this->useShortestDiscoveryDepth) {
+            return;
+        }
+
+        $queue = $this->shortestDiscoveryQueue();
+        $key = $queue->getNormalizedUrl($crawlUrl->url);
+
+        $node = $this->shortestDepthNodes[$key] ?? new ShortestDepthNode;
+        $node->handled = true;
+        $node->foundOnUrl = $foundOnUrl;
+        $node->extractedUrls = array_values(array_filter(
+            $extractedUrls,
+            fn (ExtractedUrl $extractedUrl): bool => ! $extractedUrl->isMalformed(),
+        ));
+        $node->redirectTargets = array_values($redirectTargets);
+        $this->shortestDepthNodes[$key] = $node;
+
+        foreach ($node->redirectTargets as $redirectTarget) {
+            $this->relaxKnownDepth($redirectTarget, $crawlUrl->depth);
+        }
+
+        foreach ($node->extractedUrls as $extractedUrl) {
+            $this->addExtractedUrl($extractedUrl, $foundOnUrl, $crawlUrl->depth + 1);
+        }
+    }
+
+    protected function addExtractedUrl(ExtractedUrl $extractedUrl, string $foundOnUrl, int $depth): void
+    {
+        if ($extractedUrl->isMalformed()) {
+            return;
+        }
+
+        $queue = $this->shortestDiscoveryQueue();
+        $key = $queue->getNormalizedUrl($extractedUrl->url);
+        $knownDepth = $this->shortestKnownDepths[$key] ?? $depth;
+        $effectiveDepth = min($depth, $knownDepth);
+        $this->shortestKnownDepths[$key] = $effectiveDepth;
+
+        $existingCrawlUrl = $queue->getUrl($extractedUrl->url);
+
+        if ($existingCrawlUrl !== null) {
+            if ($effectiveDepth < $existingCrawlUrl->depth) {
+                $this->relaxCrawlUrlDepth($existingCrawlUrl, $effectiveDepth);
+            }
+
+            return;
+        }
+
+        $maximumDepth = $this->getMaximumDepth();
+
+        if ($maximumDepth !== null && $effectiveDepth > $maximumDepth) {
+            return;
+        }
+
+        $this->addToCrawlQueue(new CrawlUrl(
+            url: $extractedUrl->url,
+            foundOnUrl: $foundOnUrl,
+            linkText: $extractedUrl->linkText,
+            depth: $effectiveDepth,
+            resourceType: $extractedUrl->resourceType,
+        ));
+    }
+
+    protected function relaxCrawlUrlDepth(CrawlUrl $crawlUrl, int $depth): void
+    {
+        if ($depth >= $crawlUrl->depth) {
+            return;
+        }
+
+        $crawlUrl->depth = $depth;
+
+        $queue = $this->shortestDiscoveryQueue();
+        $key = $queue->getNormalizedUrl($crawlUrl->url);
+        $this->shortestKnownDepths[$key] = min(
+            $this->shortestKnownDepths[$key] ?? $depth,
+            $depth,
+        );
+
+        $node = $this->shortestDepthNodes[$key] ?? null;
+
+        if ($node === null) {
+            return;
+        }
+
+        // Redirect hops cost no extra depth, so a shorter path to the requested
+        // URL is also a shorter path to every URL in its redirect chain.
+        foreach ($node->redirectTargets as $redirectTarget) {
+            $this->relaxKnownDepth($redirectTarget, $depth);
+        }
+
+        if (! $node->handled || $node->foundOnUrl === null) {
+            return;
+        }
+
+        foreach ($node->extractedUrls as $extractedUrl) {
+            $this->addExtractedUrl($extractedUrl, $node->foundOnUrl, $depth + 1);
+        }
+    }
+
+    protected function relaxKnownDepth(string $url, int $depth): void
+    {
+        $queue = $this->shortestDiscoveryQueue();
+        $key = $queue->getNormalizedUrl($url);
+
+        $this->shortestKnownDepths[$key] = min(
+            $this->shortestKnownDepths[$key] ?? $depth,
+            $depth,
+        );
+
+        $existingCrawlUrl = $queue->getUrl($url);
+
+        if ($existingCrawlUrl !== null && $depth < $existingCrawlUrl->depth) {
+            $this->relaxCrawlUrlDepth($existingCrawlUrl, $depth);
+        }
+    }
+
+    protected function shortestDiscoveryQueue(): ArrayCrawlQueue
+    {
+        if (! $this->crawlQueue instanceof ArrayCrawlQueue) {
+            throw UnsupportedShortestDiscoveryDepthMode::requiresBuiltInQueue();
+        }
+
+        return $this->crawlQueue;
+    }
+
+    protected function assertShortestDiscoveryDepthIsSupported(): void
+    {
+        if (! $this->useShortestDiscoveryDepth) {
+            return;
+        }
+
+        if ($this->javaScriptRenderer !== null) {
+            throw UnsupportedShortestDiscoveryDepthMode::doesNotSupportJavaScriptRendering();
+        }
+
+        if (! $this->crawlQueue instanceof ArrayCrawlQueue) {
+            throw UnsupportedShortestDiscoveryDepthMode::requiresBuiltInQueue();
+        }
     }
 
     // Internal methods

@@ -19,6 +19,39 @@ Crawler::create('https://example.com')
 
 A depth of 0 means only the start URL will be crawled. A depth of 1 means the start URL and any pages it links to, and so on.
 
+### Shortest discovery depth
+
+By default a URL is assigned the depth at which it was first discovered. If a
+shorter path to the same URL is found later, the URL keeps its original depth.
+This can make the set of crawled pages depend on the order in which responses
+complete.
+
+Enable `shortestDiscoveryDepth()` to always enforce the depth limit using the
+shortest path discovered so far:
+
+```php
+use Spatie\Crawler\Crawler;
+
+Crawler::create('https://example.com')
+    ->depth(2)
+    ->shortestDiscoveryDepth()
+    ->start();
+```
+
+With this mode, the start URL has depth 0, every followed link adds one, and
+redirects add no extra depth. When a shorter path is found, the final depth of
+pending, in-flight, and already crawled pages is updated, and pages that now
+fall within the depth limit are added to the queue. URLs are still crawled
+only once; pages are not recrawled to correct their depth. Observers are called
+when a page is actually crawled and receive the depth it had at that moment.
+
+The mode is disabled by default and can be disabled again with
+`withoutShortestDiscoveryDepth()`. It only supports non-rendered HTTP crawls
+with the built-in `ArrayCrawlQueue`: combining it with JavaScript rendering or
+a custom crawl queue throws a
+`Spatie\Crawler\Exceptions\UnsupportedShortestDiscoveryDepthMode`
+exception when the crawl starts.
+
 ## Crawl and time limits
 
 The crawl behavior can be controlled with these options:

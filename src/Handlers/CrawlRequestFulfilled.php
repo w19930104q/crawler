@@ -37,6 +37,8 @@ class CrawlRequestFulfilled
         $body = $this->getBody($response);
 
         if ($body === '') {
+            $this->registerRedirectDepths($crawlUrl, $response);
+
             $crawlResponse = $this->createCrawlResponse($response, $crawlUrl, '');
 
             $this->crawler->recordCrawled();
@@ -79,6 +81,8 @@ class CrawlRequestFulfilled
         }
 
         if (! $robots->mayFollow()) {
+            $this->registerRedirectDepths($crawlUrl, $response);
+
             return;
         }
 
@@ -88,6 +92,8 @@ class CrawlRequestFulfilled
         $extractedUrls = $urlParser->extractUrls($body, $baseUrl);
 
         $maximumDepth = $this->crawler->getMaximumDepth();
+        $useShortestDiscoveryDepth = $this->crawler->usesShortestDiscoveryDepth();
+        $validExtractedUrls = [];
 
         foreach ($extractedUrls as $extractedUrl) {
             if ($extractedUrl->isMalformed()) {
@@ -116,6 +122,12 @@ class CrawlRequestFulfilled
                 continue;
             }
 
+            if ($useShortestDiscoveryDepth) {
+                $validExtractedUrls[] = $extractedUrl;
+
+                continue;
+            }
+
             $newDepth = $crawlUrl->depth + 1;
 
             if ($maximumDepth !== null && $newDepth > $maximumDepth) {
@@ -129,6 +141,15 @@ class CrawlRequestFulfilled
                 depth: $newDepth,
                 resourceType: $extractedUrl->resourceType,
             ));
+        }
+
+        if ($useShortestDiscoveryDepth) {
+            $this->crawler->registerCrawlResult(
+                $crawlUrl,
+                $baseUrl,
+                $validExtractedUrls,
+                $response->getHeader(RedirectMiddleware::HISTORY_HEADER),
+            );
         }
     }
 
@@ -145,6 +166,24 @@ class CrawlRequestFulfilled
         $crawlResponse->setCachedBody($body);
 
         return $crawlResponse;
+    }
+
+    /**
+     * Redirect hops add no depth. Even when a response is empty or must not be
+     * followed, its redirect targets still need the depth of the requested URL.
+     */
+    protected function registerRedirectDepths(CrawlUrl $crawlUrl, ResponseInterface $response): void
+    {
+        if (! $this->crawler->usesShortestDiscoveryDepth()) {
+            return;
+        }
+
+        $this->crawler->registerCrawlResult(
+            $crawlUrl,
+            $this->getBaseUrl($response, $crawlUrl),
+            [],
+            $response->getHeader(RedirectMiddleware::HISTORY_HEADER),
+        );
     }
 
     protected function getBaseUrl(ResponseInterface $response, CrawlUrl $crawlUrl): string
