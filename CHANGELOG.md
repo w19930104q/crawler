@@ -2,6 +2,12 @@
 
 All notable changes to `spatie/crawler` will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Optional, disabled-by-default transfer tracking mode for non-rendering HTTP collection. `trackTransfers()` records every redirect hop and retry attempt per crawl queue task, including failed terminal transfers, accessible through `getTransferHistory()` as immutable `TransferEvent` snapshots.
+
 ## 9.4.2 - 2026-08-07
 
 ### What's Changed

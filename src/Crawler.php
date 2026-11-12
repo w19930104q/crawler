@@ -26,6 +26,7 @@ use Spatie\Crawler\Handlers\CrawlRequestFulfilled;
 use Spatie\Crawler\JavaScriptRenderers\BrowsershotRenderer;
 use Spatie\Crawler\JavaScriptRenderers\JavaScriptRenderer;
 use Spatie\Crawler\Throttlers\Throttle;
+use Spatie\Crawler\TransferHistory;
 use Spatie\Crawler\UrlParsers\LinkUrlParser;
 use Spatie\Crawler\UrlParsers\SitemapUrlParser;
 use Spatie\Crawler\UrlParsers\UrlParser;
@@ -273,6 +274,11 @@ class Crawler
         $this->failedUrlCount = 0;
         $this->currentUrlCount = 0;
         $this->startedAt = time();
+        $this->transferStats = [];
+
+        if ($this->transferTrackingEnabled && $this->transferHistory !== null) {
+            $this->transferHistory->reset();
+        }
 
         $baseUrl = $this->normalizeBaseUrl($this->baseUrl);
         $this->baseUrl = $baseUrl;
@@ -421,14 +427,18 @@ class Crawler
         return $this->javaScriptRenderer !== null;
     }
 
-    public function setTransferStats(string $url, TransferStats $stats): void
+    public function setTransferStats(string $key, TransferStats $stats): void
     {
-        $this->transferStats[$url] = $stats;
+        $this->transferStats[$key] = $stats;
     }
 
-    public function getTransferStats(string $url): ?TransferStats
+    public function getTransferStats(string $key): ?TransferStats
     {
-        return $this->transferStats[$url] ?? null;
+        if ($this->transferTrackingEnabled && $this->transferHistory !== null) {
+            return $this->transferHistory->lastStatsForTask($key);
+        }
+
+        return $this->transferStats[$key] ?? null;
     }
 
     public function recordCrawled(): void
@@ -557,7 +567,32 @@ class Crawler
             $this->currentUrlCount++;
             $this->crawlQueue->markAsProcessed($crawlUrl);
 
-            yield $crawlUrl->id => new Request('GET', $crawlUrl->url);
+            $request = new Request('GET', $crawlUrl->url);
+
+            // Transfer tracking only covers non-rendering HTTP collection.
+            // With a JavaScript renderer the visible page is produced by the
+            // browser, whose network activity is not observable through
+            // Guzzle's on_stats hook.
+            if (! $this->transferTrackingEnabled
+                || $this->transferHistory === null
+                || $this->javaScriptRenderer !== null
+            ) {
+                yield $crawlUrl->id => $request;
+
+                continue;
+            }
+
+            // Pass the queue task id alongside the request. The transfer
+            // tracking middleware stamps it onto the request so on_stats can
+            // attribute every redirect hop and retry to this task, including
+            // concurrent tasks that land on the same effective URL.
+            $taskId = (string) $crawlUrl->id;
+
+            yield $crawlUrl->id => function (array $options) use ($request, $taskId) {
+                $options[TransferHistory::TASK_ID_HEADER] = $taskId;
+
+                return $this->client->sendAsync($request, $options);
+            };
         }
     }
 

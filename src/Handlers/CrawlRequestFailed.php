@@ -29,7 +29,7 @@ class CrawlRequestFailed
             $exception = new RequestException($exception->getMessage(), $request, previous: $exception);
         }
 
-        $transferStats = $this->crawler->getTransferStats($crawlUrl->url);
+        $transferStats = $this->crawler->getTransferStats((string) $crawlUrl->id);
         $transferStatistics = $transferStats !== null
             ? TransferStatistics::fromTransferStats($transferStats)
             : null;

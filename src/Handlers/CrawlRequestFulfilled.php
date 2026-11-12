@@ -140,7 +140,7 @@ class CrawlRequestFulfilled
             $crawlUrl->linkText,
             $crawlUrl->depth,
             $crawlUrl->resourceType ?? ResourceType::Link,
-            $this->crawler->getTransferStats($crawlUrl->url),
+            $this->crawler->getTransferStats((string) $crawlUrl->id),
         );
         $crawlResponse->setCachedBody($body);
 

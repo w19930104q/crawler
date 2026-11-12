@@ -195,6 +195,33 @@ it('exposes transfer stats on crawl response', function () {
     expect($stats->transferTimeInMs())->toBeGreaterThan(0);
 });
 
+it('tracks the full redirect transfer history over real http', function () {
+    $crawler = Crawler::create(TestServer::baseUrl().'/redirect-chain')
+        ->ignoreRobots()
+        ->depth(0)
+        ->concurrency(1)
+        ->trackTransfers();
+
+    $crawler->start();
+
+    $taskId = TestServer::baseUrl().'/redirect-chain';
+    $events = $crawler->getTransferHistory($taskId);
+
+    expect($events)->toHaveCount(3);
+    expect($events[0]->statusCode())->toBe(302);
+    expect($events[1]->statusCode())->toBe(301);
+    expect($events[2]->statusCode())->toBe(200);
+
+    expect($events[0]->requestUri())->toContain('/redirect-chain');
+    expect($events[1]->requestUri())->toContain('/redirect-middle');
+    expect($events[2]->effectiveUri())->toContain('/redirect-final');
+
+    foreach ($events as $event) {
+        expect($event->taskId())->toBe($taskId);
+        expect($event->transferTimeInMs())->toBeGreaterThanOrEqual(0);
+    }
+});
+
 it('applies custom guzzle middleware to requests', function () {
     $requestedUrls = [];
 

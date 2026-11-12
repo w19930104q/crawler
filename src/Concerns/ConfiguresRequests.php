@@ -14,6 +14,7 @@ use Psr\Http\Client\NetworkExceptionInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Spatie\Crawler\Faking\FakeHandler;
+use Spatie\Crawler\TransferHistory;
 
 trait ConfiguresRequests
 {
@@ -55,6 +56,10 @@ trait ConfiguresRequests
     protected int $retryTimes = 0;
 
     protected int $retryDelayMs = 500;
+
+    protected bool $transferTrackingEnabled = false;
+
+    protected ?TransferHistory $transferHistory = null;
 
     protected static array $defaultClientOptions = [
         RequestOptions::COOKIES => true,
@@ -157,6 +162,51 @@ trait ConfiguresRequests
         return $this;
     }
 
+    /**
+     * Record the ordered transfer history (redirects and retries included) of
+     * every non-rendering HTTP crawl task. Disabled by default; enabling it
+     * does not change any other crawler behavior.
+     */
+    public function trackTransfers(): self
+    {
+        $this->transferTrackingEnabled = true;
+        $this->transferHistory ??= new TransferHistory;
+
+        return $this;
+    }
+
+    public function doNotTrackTransfers(): self
+    {
+        $this->transferTrackingEnabled = false;
+
+        return $this;
+    }
+
+    public function isTrackingTransfers(): bool
+    {
+        return $this->transferTrackingEnabled;
+    }
+
+    /**
+     * Transfers recorded for a queue task id, oldest first. Returns an empty
+     * array unless transfer tracking is enabled.
+     *
+     * @return list<\Spatie\Crawler\TransferEvent>
+     */
+    public function getTransferHistory(string $taskId): array
+    {
+        if (! $this->transferTrackingEnabled || $this->transferHistory === null) {
+            return [];
+        }
+
+        return $this->transferHistory->forTask($taskId);
+    }
+
+    public function getTransferHistoryStore(): ?TransferHistory
+    {
+        return $this->transferTrackingEnabled ? $this->transferHistory : null;
+    }
+
     public function stream(): self
     {
         $this->streamResponses = true;
@@ -231,8 +281,26 @@ trait ConfiguresRequests
         }
 
         $throttle = $this->throttle;
-        $options[RequestOptions::ON_STATS] = function (TransferStats $stats) use ($throttle) {
-            $this->setTransferStats((string) $stats->getEffectiveUri(), $stats);
+        $trackTransfers = $this->transferTrackingEnabled;
+        $history = $this->transferHistory;
+        $options[RequestOptions::ON_STATS] = function (TransferStats $stats) use (
+            $throttle,
+            $trackTransfers,
+            $history,
+        ): void {
+            if ($trackTransfers && $history !== null) {
+                $event = $history->recordFromStats($stats);
+
+                // Only transfers carrying a crawl task id belong to a queue
+                // task. Robots.txt requests and direct requests on a shared
+                // client have no stamp and never enter the page history, but
+                // they still feed the throttle exactly like before.
+                if ($event !== null) {
+                    $this->setTransferStats($event->taskId(), $stats);
+                }
+            } else {
+                $this->setTransferStats((string) $stats->getEffectiveUri(), $stats);
+            }
 
             if ($throttle !== null) {
                 $throttle->recordResponseTime($stats->getTransferTime());
@@ -252,6 +320,10 @@ trait ConfiguresRequests
 
         if ($this->retryTimes > 0) {
             $stack->push($this->createRetryMiddleware(), 'retry');
+        }
+
+        if ($trackTransfers && $history !== null) {
+            $stack->push($this->createTransferTrackingMiddleware($history), 'transfer_tracking');
         }
 
         foreach ($this->middlewares as [$middleware, $name]) {
@@ -294,5 +366,34 @@ trait ConfiguresRequests
                 return $delayMs * ($retries + 1);
             },
         );
+    }
+
+    /**
+     * Middleware stamping every crawl request with its queue task id. The
+     * header survives redirects and retries, which lets on_stats attribute
+     * each transfer without relying on Guzzle version specific pool keys.
+     */
+    protected function createTransferTrackingMiddleware(TransferHistory $history): callable
+    {
+        return static function (callable $handler) use ($history): callable {
+            return static function (RequestInterface $request, array $options) use ($handler, $history) {
+                $taskId = $options[TransferHistory::TASK_ID_HEADER] ?? null;
+
+                if (! is_string($taskId) || $taskId === '') {
+                    // Anything not scheduled by the crawler (robots.txt,
+                    // direct client requests on a shared stack) stays out.
+                    return $handler($request, $options);
+                }
+
+                $headerValue = $history->registerTask($taskId);
+
+                // Redirects and retries reuse the stamped request, and Guzzle
+                // keeps the header when following them.
+                return $handler(
+                    TransferHistory::attachTaskId($request, $headerValue),
+                    $options,
+                );
+            };
+        };
     }
 }

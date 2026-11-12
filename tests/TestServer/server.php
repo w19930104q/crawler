@@ -75,6 +75,19 @@ switch ($uri) {
         echo "User-agent: *\nDisallow: /secret\n";
         break;
 
+    case '/redirect-chain':
+        header('Location: /redirect-middle', true, 302);
+        break;
+
+    case '/redirect-middle':
+        header('Location: /redirect-final', true, 301);
+        break;
+
+    case '/redirect-final':
+        header('Content-Type: text/html');
+        echo '<html><body><h1>Redirect final</h1></body></html>';
+        break;
+
     default:
         http_response_code(404);
         header('Content-Type: text/html');
