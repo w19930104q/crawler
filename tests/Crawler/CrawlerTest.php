@@ -531,7 +531,9 @@ it('should handle redirects correctly when tracking is active', function () {
         ->fake($fakes)
         ->start();
 
-    expectCrawledUrlCount(3);
+    // The trap URL redirects back to the already crawled entry page: as an
+    // alias of an already processed final page it is not processed again.
+    expectCrawledUrlCount(2);
 });
 
 it('exposes redirect history on crawl response', function () {

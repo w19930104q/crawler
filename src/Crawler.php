@@ -55,6 +55,12 @@ class Crawler
 
     protected ?RobotsTxt $robotsTxt = null;
 
+    /** @var array<string, RobotsTxt> */
+    protected array $robotsTxtByHost = [];
+
+    /** @var array<string, true> */
+    protected array $processedFinalUrls = [];
+
     protected string $crawlRequestFulfilledClass;
 
     protected string $crawlRequestFailedClass;
@@ -272,6 +278,8 @@ class Crawler
         $this->crawledUrlCount = 0;
         $this->failedUrlCount = 0;
         $this->currentUrlCount = 0;
+        $this->processedFinalUrls = [];
+        $this->robotsTxtByHost = [];
         $this->startedAt = time();
 
         $baseUrl = $this->normalizeBaseUrl($this->baseUrl);
@@ -402,6 +410,46 @@ class Crawler
         return $this->robotsTxt;
     }
 
+    /**
+     * Get the robots.txt rules for the host of the given URL. Rules are
+     * fetched (and cached) per host, so redirect targets on another host
+     * are checked against that host's own robots.txt.
+     */
+    public function getRobotsTxtFor(string $url): RobotsTxt
+    {
+        $hostKey = $this->robotsHostKey($url);
+
+        if (! isset($this->robotsTxtByHost[$hostKey])) {
+            $this->robotsTxtByHost[$hostKey] = $this->fetchRobotsTxt($url);
+        }
+
+        return $this->robotsTxtByHost[$hostKey];
+    }
+
+    public function robotsAllow(string $url): bool
+    {
+        if (! $this->respectRobots) {
+            return true;
+        }
+
+        return $this->getRobotsTxtFor($url)->allows($url, $this->getUserAgent());
+    }
+
+    /**
+     * Has a page at this final (post-redirect) URL already been processed?
+     * Used to handle multiple alias URLs redirecting to the same final page
+     * only once.
+     */
+    public function hasProcessedFinalUrl(string $url): bool
+    {
+        return isset($this->processedFinalUrls[UrlNormalizer::normalize($url)]);
+    }
+
+    public function markFinalUrlProcessed(string $url): void
+    {
+        $this->processedFinalUrls[UrlNormalizer::normalize($url)] = true;
+    }
+
     public function getUrlParser(): UrlParser
     {
         if ($this->urlParser !== null) {
@@ -511,8 +559,7 @@ class Crawler
     protected function createRobotsTxt(Client $client): RobotsTxt
     {
         try {
-            $parsed = parse_url($this->baseUrl);
-            $robotsUrl = ($parsed['scheme'] ?? 'https').'://'.($parsed['host'] ?? '').(isset($parsed['port']) ? ':'.$parsed['port'] : '').'/robots.txt';
+            $robotsUrl = $this->robotsHostKey($this->baseUrl).'/robots.txt';
             $response = $client->get($robotsUrl);
             $content = (string) $response->getBody();
 
@@ -520,6 +567,42 @@ class Crawler
         } catch (Exception $exception) {
             return new RobotsTxt('');
         }
+    }
+
+    protected function fetchRobotsTxt(string $url): RobotsTxt
+    {
+        if ($this->robotsTxt !== null && $this->robotsHostKey($url) === $this->robotsHostKey($this->baseUrl)) {
+            return $this->robotsTxt;
+        }
+
+        if ($this->client === null) {
+            return new RobotsTxt('');
+        }
+
+        try {
+            $robotsUrl = $this->robotsHostKey($url).'/robots.txt';
+            $response = $this->client->get($robotsUrl);
+            $content = (string) $response->getBody();
+
+            return new RobotsTxt($content);
+        } catch (Exception $exception) {
+            return new RobotsTxt('');
+        }
+    }
+
+    protected function robotsHostKey(string $url): string
+    {
+        $parsed = parse_url($url);
+
+        $scheme = strtolower($parsed['scheme'] ?? 'https');
+        $host = strtolower($parsed['host'] ?? '');
+
+        $port = $parsed['port'] ?? null;
+        if (($scheme === 'http' && $port === 80) || ($scheme === 'https' && $port === 443)) {
+            $port = null;
+        }
+
+        return $scheme.'://'.$host.($port !== null ? ':'.$port : '');
     }
 
     protected function getCrawlRequests(): Generator

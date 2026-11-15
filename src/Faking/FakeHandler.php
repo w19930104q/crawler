@@ -4,6 +4,8 @@ namespace Spatie\Crawler\Faking;
 
 use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Psr7\Uri;
+use GuzzleHttp\Psr7\UriResolver;
 use GuzzleHttp\RedirectMiddleware;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
@@ -30,7 +32,8 @@ class FakeHandler
 
     public function __invoke(RequestInterface $request, array $options = []): FulfilledPromise
     {
-        $response = $this->findResponse((string) $request->getUri());
+        $currentUrl = (string) $request->getUri();
+        $response = $this->findResponse($currentUrl);
 
         $redirectHistory = [];
 
@@ -47,7 +50,12 @@ class FakeHandler
                 break;
             }
 
+            // Resolve relative redirects against the current URL, like a
+            // real HTTP client would.
+            $location = (string) UriResolver::resolve(new Uri($currentUrl), new Uri($location));
+
             $redirectHistory[] = $location;
+            $currentUrl = $location;
             $response = $this->findResponse($location);
         }
 

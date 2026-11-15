@@ -22,6 +22,8 @@ $response->resourceType();   // ResourceType (link, image, script, etc.)
 $response->transferStats();  // ?Spatie\Crawler\TransferStatistics (transfer timing and metadata, null for faked responses)
 $response->redirectHistory();// array (list of URLs in the redirect chain)
 $response->wasRedirected();  // bool (whether the response went through any redirects)
+$response->requestedUrl();   // ?string (the URL that was requested, before redirects)
+$response->finalUrl();       // ?string (the URL of the page actually returned, after redirects)
 ```
 
 If you need access to the underlying PSR-7 response:
@@ -87,7 +89,9 @@ Crawler::create('https://example.com')
     ->start();
 ```
 
-The `redirectHistory()` method returns an array of URLs that were visited before reaching the final URL. The `wasRedirected()` method is a convenience that returns `true` when the redirect history is not empty.
+The `redirectHistory()` method returns an array of URLs that were visited before reaching the final URL. The `wasRedirected()` method is a convenience that returns `true` when the redirect history is not empty. `finalUrl()` returns the last URL of the redirect chain (or the requested URL when no redirect occurred), so observers always have access to the requested URL, the final URL and the full chain.
+
+The crawl boundary is re-applied to the final URL after redirects: when the redirect target falls outside the crawl profile (for example an external domain while using `internalOnly()`), matches a `neverCrawl` pattern, or is disallowed by the robots.txt of the final host, the response is not reported, parsed, or followed. When multiple URLs redirect to the same final page, that page is only processed once.
 
 The crawler follows up to 5 redirects per request by default (Guzzle's built-in limit), which protects against infinite redirect loops. To change this limit, pass a custom `allow_redirects` option:
 

@@ -24,6 +24,7 @@ class CrawlResponse
         protected int $depth = 0,
         protected ResourceType $resourceType = ResourceType::Link,
         protected ?TransferStats $transferStats = null,
+        protected ?string $requestUrl = null,
     ) {}
 
     public static function fake(
@@ -117,6 +118,29 @@ class CrawlResponse
     public function wasRedirected(): bool
     {
         return $this->redirectHistory() !== [];
+    }
+
+    /**
+     * The URL that was requested, before any redirects were followed.
+     */
+    public function requestedUrl(): ?string
+    {
+        return $this->requestUrl;
+    }
+
+    /**
+     * The URL of the page that was actually returned: the last URL of the
+     * redirect chain, or the requested URL when no redirects occurred.
+     */
+    public function finalUrl(): ?string
+    {
+        $redirectHistory = $this->redirectHistory();
+
+        if ($redirectHistory !== []) {
+            return (string) end($redirectHistory);
+        }
+
+        return $this->requestUrl;
     }
 
     public function toPsrResponse(): ResponseInterface

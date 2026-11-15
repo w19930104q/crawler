@@ -122,6 +122,29 @@ trait HasCrawlScope
         return $this->crawlProfile ?? new CrawlAllUrls;
     }
 
+    /**
+     * Re-apply the crawl boundary to the final URL of a redirected request,
+     * mirroring the checks done when URLs are added to the crawl queue:
+     * alwaysCrawl wins, then neverCrawl, the final host's robots.txt and
+     * the crawl profile may each reject the URL.
+     */
+    public function mayCrawlFinalUrl(string $url): bool
+    {
+        if ($this->matchesAlwaysCrawl($url)) {
+            return true;
+        }
+
+        if ($this->matchesNeverCrawl($url)) {
+            return false;
+        }
+
+        if (! $this->robotsAllow($url)) {
+            return false;
+        }
+
+        return $this->getCrawlProfile()->shouldCrawl($url);
+    }
+
     protected function resolveScope(): void
     {
         if ($this->crawlProfile !== null) {

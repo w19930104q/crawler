@@ -34,6 +34,27 @@ class CrawlRequestFulfilled
     {
         $crawlUrl = $this->crawler->getCrawlQueue()->getUrlById($index);
 
+        $wasRedirected = $response->getHeader(RedirectMiddleware::HISTORY_HEADER) !== [];
+        $finalUrl = $this->getFinalUrl($response, $crawlUrl);
+
+        if ($this->crawler->hasProcessedFinalUrl($finalUrl)) {
+            // Another (alias) URL already redirected to this final page.
+            return;
+        }
+
+        if ($wasRedirected && ! $this->crawler->mayCrawlFinalUrl($finalUrl)) {
+            // The redirect target falls outside the crawl scope: it is not
+            // reported, parsed, or followed.
+            return;
+        }
+
+        $this->crawler->markFinalUrlProcessed($finalUrl);
+
+        if ($wasRedirected) {
+            // Make sure a queued copy of the final URL is not requested again.
+            $this->crawler->getCrawlQueue()->markAsProcessed(new CrawlUrl($finalUrl));
+        }
+
         $body = $this->getBody($response);
 
         if ($body === '') {
@@ -82,7 +103,7 @@ class CrawlRequestFulfilled
             return;
         }
 
-        $baseUrl = $this->getBaseUrl($response, $crawlUrl);
+        $baseUrl = $finalUrl;
 
         $urlParser = $this->crawler->getUrlParser();
         $extractedUrls = $urlParser->extractUrls($body, $baseUrl);
@@ -141,13 +162,14 @@ class CrawlRequestFulfilled
             $crawlUrl->depth,
             $crawlUrl->resourceType ?? ResourceType::Link,
             $this->crawler->getTransferStats($crawlUrl->url),
+            $crawlUrl->url,
         );
         $crawlResponse->setCachedBody($body);
 
         return $crawlResponse;
     }
 
-    protected function getBaseUrl(ResponseInterface $response, CrawlUrl $crawlUrl): string
+    protected function getFinalUrl(ResponseInterface $response, CrawlUrl $crawlUrl): string
     {
         $redirectHistory = $response->getHeader(RedirectMiddleware::HISTORY_HEADER);
 
@@ -155,7 +177,12 @@ class CrawlRequestFulfilled
             return $crawlUrl->url;
         }
 
-        return end($redirectHistory);
+        return (string) end($redirectHistory);
+    }
+
+    protected function getBaseUrl(ResponseInterface $response, CrawlUrl $crawlUrl): string
+    {
+        return $this->getFinalUrl($response, $crawlUrl);
     }
 
     protected function getBody(ResponseInterface $response): string
